@@ -1,0 +1,10 @@
+[package]
+name = "hemoglobin-search"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chumsky = "0.10.1"
+hemoglobin = {path="../hemoglobin", version = "0.8.3"}
+regex = "1.11.1"
+rust-fuzzy-search = "0.1.1"
