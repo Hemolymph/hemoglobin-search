@@ -66,7 +66,7 @@ pub fn parse_query(string: &str) -> Result<Query, Vec<Rich<'_, char>>> {
 #[allow(clippy::too_many_lines)]
 pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Rich<'a, char>>> + 'a {
     let word = any()
-        .filter(|c: &char| !c.is_whitespace())
+        .filter(|c: &char| !c.is_whitespace() && *c != ')')
         .labelled("not whitespace")
         .repeated()
         .at_least(1)
@@ -292,7 +292,12 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
         ))
         .padded();
 
-        let atom = atom.or(group_restriction.clone());
+        let atom = group_restriction
+            .map_err(|x| {
+                println!("{x:#?}");
+                x
+            })
+            .or(atom);
 
         let uniop = choice((
             just('-').to(QueryOp::Not),
