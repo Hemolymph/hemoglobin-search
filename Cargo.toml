@@ -2,14 +2,18 @@
 name = "hemoglobin-search"
 description = "Hemoglobin search utilities"
 license = "MIT"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Arity <katie-and@ampersandia.net>"]
 readme = "README.md"
 repository = "https://github.com/Hemolymph/hemoglobin-search"
 
+
+
 [dependencies]
 chumsky = "0.10.1"
-hemoglobin = {path="../hemoglobin", version = "0.9.0"}
+hemoglobin = {path="../hemoglobin", version = "0.9.1"}
 regex = "1.11.1"
 rust-fuzzy-search = "0.1.1"
+
+

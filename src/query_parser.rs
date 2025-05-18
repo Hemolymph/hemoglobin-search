@@ -3,6 +3,7 @@ use chumsky::{
     error::Rich,
     extra,
     prelude::{any, choice, end, just, recursive},
+    text::ident,
 };
 use hemoglobin::{
     cards::{
@@ -65,9 +66,7 @@ pub fn parse_query(string: &str) -> Result<Query, Vec<Rich<'_, char>>> {
 #[allow(clippy::too_many_lines)]
 pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Rich<'a, char>>> + 'a {
     let word = any()
-        .filter(|c: &char| {
-            !c.is_whitespace() && !matches!(*c, ':' | '<' | '>' | '!' | '=' | '(' | ')' | '/' | '"')
-        })
+        .filter(|c: &char| !c.is_whitespace())
         .labelled("not whitespace")
         .repeated()
         .at_least(1)
@@ -83,14 +82,15 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
     };
 
     let keyword = |mat: &'static str| {
-        word.try_map(move |kw, span| {
-            if mat == kw {
-                Ok(())
-            } else {
-                Err(Rich::custom(span, format!("Expected {kw}")))
-            }
-        })
-        .labelled(format!("`{mat}`"))
+        ident()
+            .try_map(move |kw, span| {
+                if mat == kw {
+                    Ok(())
+                } else {
+                    Err(Rich::custom(span, format!("Expected {kw}")))
+                }
+            })
+            .labelled(format!("`{mat}`"))
     };
 
     let name_property_name = choice((keyword("name"), keyword("n"))).to(Text::Name);
@@ -111,6 +111,7 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
     .padded();
 
     let cost_property_name = choice((keyword("cost"), keyword("c"))).to(Number::Cost);
+    let flip_cost_property_name = choice((keyword("flip"), keyword("f"))).to(Number::FlipCost);
     let power_property_name = choice((keyword("power"), keyword("p"))).to(Number::Power);
     let def_property_name =
         choice((keyword("defense"), keyword("def"), keyword("d"))).to(Number::Defense);
@@ -119,6 +120,7 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
 
     let num_property_name = choice((
         cost_property_name,
+        flip_cost_property_name,
         power_property_name,
         def_property_name,
         health_property_name,
@@ -275,7 +277,8 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
         // Fuzzy
         let fuzzy = word
             .filter(|x| x != "XOR" && x != "OR" && x != "SORT")
-            .map(QueryRestriction::Fuzzy);
+            .map(QueryRestriction::Fuzzy)
+            .labelled("basic query word");
 
         // Atom
         let atom = choice((
