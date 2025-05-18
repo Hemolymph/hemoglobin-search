@@ -268,12 +268,7 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
         ))
         .padded();
 
-        let atom = group_restriction
-            .map_err(|x| {
-                println!("{x:#?}");
-                x
-            })
-            .or(atom);
+        let atom = group_restriction.or(atom);
 
         let uniop = choice((
             just('-').to(QueryOp::Not),

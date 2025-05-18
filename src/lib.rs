@@ -1,12 +1,12 @@
+#[warn(clippy::pedantic)]
+#[warn(clippy::nursery)]
 pub mod fuzzy;
 pub mod query_parser;
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fmt::{Display, Write},
 };
 
-use chumsky::container::Seq;
 use fuzzy::weighted_compare;
 use hemoglobin::{
     cards::{
@@ -46,16 +46,37 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn keyword_is_match<'a, T, I>(
-        &self,
-        keyword: &Keyword,
-        cards: &I,
-        cache: &Cache<&'a T>,
+    fn triviality(&self) -> Triviality {
+        if !self.name.is_empty() {
+            return Triviality::NonTrivial;
+        }
+
+        if self.restrictions.is_empty() {
+            return Triviality::Tautology;
+        }
+
+        let mut triviality = Triviality::Tautology;
+
+        for restriction in &self.restrictions {
+            match restriction.triviality() {
+                Triviality::NonTrivial => return Triviality::NonTrivial,
+                Triviality::Contradiction => triviality = Triviality::Contradiction,
+                Triviality::Tautology => (),
+            }
+        }
+
+        triviality
+    }
+    pub fn keyword_is_match<'card, 'cardvec, 'query, T, I>(
+        &'query self,
+        keyword: &'card Keyword,
+        cards: &'cardvec I,
+        cache: &'query mut Cache<&'card T>,
     ) -> bool
     where
-        T: Read + 'a + Clone,
-        &'a T: Read,
-        I: IntoIterator<Item = &'a T> + Clone,
+        T: Read + 'card + Clone,
+        &'card T: Read,
+        I: Iterator<Item = &'card T> + Clone,
     {
         if keyword.name == "devours" {
             if let Some(KeywordData::CardId(ref devoured_id)) = keyword.data {
@@ -192,19 +213,67 @@ pub enum QueryRestriction {
     Xor(Query, Query),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Triviality {
+    NonTrivial,
+    Contradiction,
+    Tautology,
+}
+
 impl QueryRestriction {
-    pub fn is_match<'a, C, T, I>(
-        &self,
-        card: &C,
-        query: &Query,
-        cards: &I,
-        cache: &Cache<&'a T>,
+    fn triviality(&self) -> Triviality {
+        match self {
+            QueryRestriction::NumberComparison(_, Comparison::LowerThan(0)) => {
+                Triviality::Contradiction
+            }
+            QueryRestriction::NumberComparison(Number::Cost, Comparison::GreaterThanOrEqual(0)) => {
+                Triviality::Tautology
+            }
+            QueryRestriction::Not(query) => match query.triviality() {
+                Triviality::Tautology => Triviality::Contradiction,
+                Triviality::Contradiction => Triviality::Tautology,
+                Triviality::NonTrivial => Triviality::NonTrivial,
+            },
+            QueryRestriction::Group(query) => query.triviality(),
+            QueryRestriction::Or(query, query1) => {
+                match (query.triviality(), query1.triviality()) {
+                    (Triviality::NonTrivial, _) => Triviality::NonTrivial,
+                    (_, Triviality::NonTrivial) => Triviality::NonTrivial,
+                    (Triviality::Contradiction, Triviality::Contradiction) => {
+                        Triviality::Contradiction
+                    }
+                    (Triviality::Contradiction, Triviality::Tautology) => Triviality::Tautology,
+                    (Triviality::Tautology, Triviality::Contradiction) => Triviality::Tautology,
+                    (Triviality::Tautology, Triviality::Tautology) => Triviality::Tautology,
+                }
+            }
+            QueryRestriction::Xor(query, query1) => {
+                match (query.triviality(), query1.triviality()) {
+                    (Triviality::NonTrivial, _) => Triviality::NonTrivial,
+                    (_, Triviality::NonTrivial) => Triviality::NonTrivial,
+                    (Triviality::Contradiction, Triviality::Contradiction) => {
+                        Triviality::Contradiction
+                    }
+                    (Triviality::Contradiction, Triviality::Tautology) => Triviality::Tautology,
+                    (Triviality::Tautology, Triviality::Contradiction) => Triviality::Tautology,
+                    (Triviality::Tautology, Triviality::Tautology) => Triviality::Contradiction,
+                }
+            }
+            _ => Triviality::NonTrivial,
+        }
+    }
+    pub fn is_match<'card, 'cardvec, 'query, C, T, I>(
+        &'query self,
+        card: &'card C,
+        query: &'query Query,
+        cards: &'cardvec I,
+        cache: &'query mut Cache<&'card T>,
     ) -> Ternary
     where
         C: Read,
-        T: Read + 'a + Clone,
-        &'a T: Read,
-        I: IntoIterator<Item = &'a T> + Clone,
+        T: Read + 'card + Clone,
+        &'card T: Read,
+        I: Iterator<Item = &'card T> + Clone,
     {
         match self {
             QueryRestriction::TextComparison(property, comparison) => card
@@ -253,15 +322,15 @@ impl QueryRestriction {
             QueryRestriction::DevouredBy(devoured_by) => {
                 let key = format!("{devoured_by}");
                 let devoured_cards;
-                let maybe_devourees = RefCell::borrow(cache).get(&key).cloned();
+                let maybe_devourees = cache.get(&key).cloned();
                 if let Some(value) = maybe_devourees {
                     devoured_cards = value;
                 } else {
-                    let cloned_cards = cards.clone();
-                    let devourers = cards.clone().into_iter().filter(|card| {
-                        matches_query(card, devoured_by, &cloned_cards, cache).is_true()
-                    });
+                    let devourers = cards
+                        .clone()
+                        .filter(|card| matches_query(*card, devoured_by, cards, cache).is_true());
 
+                    let mut no_devourers = true;
                     let mut queries: Vec<Query> = vec![];
 
                     for devourer in devourers {
@@ -272,6 +341,7 @@ impl QueryRestriction {
                             .get_keywords()
                             .and_then(|x| x.iter().find(|x| x.name == "devours"))
                         {
+                            no_devourers = false;
                             queries.push(Query {
                                 name: String::new(),
                                 restrictions: card_id.get_as_query(),
@@ -280,29 +350,33 @@ impl QueryRestriction {
                         }
                     }
 
-                    let devourees_query = queries
-                        .into_iter()
-                        .reduce(|first, second| Query {
-                            name: String::new(),
-                            restrictions: vec![QueryRestriction::Or(first, second)],
-                            sort: Sort::None,
-                        })
-                        .unwrap_or(Query {
-                            name: String::new(),
-                            restrictions: vec![],
-                            sort: Sort::None,
-                        });
+                    if no_devourers {
+                        devoured_cards = vec![];
+                        cache.insert(key, vec![]);
+                    } else {
+                        let devourees_query = queries
+                            .into_iter()
+                            .reduce(|first, second| Query {
+                                name: String::new(),
+                                restrictions: vec![QueryRestriction::Or(first, second)],
+                                sort: Sort::None,
+                            })
+                            .unwrap_or(Query {
+                                name: String::new(),
+                                restrictions: vec![],
+                                sort: Sort::None,
+                            });
 
-                    let devourees_query = Query {
-                        name: query.name.clone(),
-                        restrictions: devourees_query.restrictions,
-                        sort: query.sort,
-                    };
+                        let devourees_query = Query {
+                            name: query.name.clone(),
+                            restrictions: devourees_query.restrictions,
+                            sort: query.sort,
+                        };
 
-                    devoured_cards = search(&devourees_query, cloned_cards);
-                    cache.borrow_mut().insert(key, devoured_cards.clone());
+                        devoured_cards = search(&devourees_query, cards.clone());
+                        cache.insert(key, devoured_cards.clone());
+                    }
                 }
-
                 devoured_cards
                     .iter()
                     .any(|x| x.get_name() == card.get_name())
@@ -363,21 +437,28 @@ pub fn fuzzy(card: &impl Read, query: &str) -> bool {
 }
 
 /// The Cache for `devouredby` queries.
-pub type Cache<T> = RefCell<HashMap<String, Vec<T>>>;
+pub type Cache<T> = HashMap<String, Vec<T>>;
 
 /// Function that takes `cards` and outputs a vector pointing to all the cards that matched the `query`.
 #[must_use]
-pub fn search<'a, 'b, C, I>(query: &Query, cards: I) -> Vec<&'a C>
+pub fn search<'card, 'query, C, I>(query: &'query Query, cards: I) -> Vec<&'card C>
 where
-    C: Read + Clone + 'a,
-    I: IntoIterator<Item = &'a C> + Clone + 'b,
-    &'a C: Read,
+    C: Read + Clone + 'card,
+    I: IntoIterator<Item = &'card C> + Clone + 'query,
+    I::IntoIter: Clone,
+    &'card C: Read,
 {
-    let cards_clone = cards.clone();
-    let cache = Cache::new(HashMap::new());
-    let mut results: Vec<&C> = cards
-        .into_iter()
-        .filter(|card| matches_query(card, query, &cards_clone, &cache) == Ternary::True)
+    match query.triviality() {
+        Triviality::NonTrivial => (),
+        Triviality::Contradiction => return vec![],
+        Triviality::Tautology => return cards.into_iter().collect(),
+    }
+
+    let iter = cards.into_iter();
+    let iter_clone = iter.clone();
+    let mut cache = Cache::new();
+    let mut results: Vec<&C> = iter
+        .filter(|card| matches_query(*card, query, &iter_clone, &mut cache) == Ternary::True)
         .collect();
 
     match &query.sort {
@@ -426,21 +507,27 @@ where
 /// Since `devouredby` queries always require two searches, the results of the first search are stored in a `cache` that is internally mutable. This cache is only ever mutated the first time each devouredby query is executed.
 /// The sum total of available `cards` is passed in order to perform searches. This function clones these cards, so this value should be an Iterator.
 #[allow(clippy::too_many_lines)]
-pub fn matches_query<'a, 'b, C, T, I>(
-    card: &C,
-    query: &Query,
-    cards: &I,
-    cache: &Cache<&'a T>,
+pub fn matches_query<'card, 'cardvec, 'query, C, T, I>(
+    card: &'card C,
+    query: &'query Query,
+    cards: &'cardvec I,
+    cache: &'query mut Cache<&'card T>,
 ) -> Ternary
 where
     C: Read,
-    T: Read + 'a + Clone,
-    &'a T: Read,
-    I: IntoIterator<Item = &'a T> + Clone,
+    T: Read + 'card + Clone,
+    &'card T: Read,
+    I: Iterator<Item = &'card T> + Clone,
 {
     let mut filtered = Ternary::True;
     for res in &query.restrictions {
-        filtered = filtered.and(res.is_match(card, query, cards, cache));
+        match res.triviality() {
+            Triviality::NonTrivial => {
+                filtered = filtered.and(res.is_match(card, query, cards, cache))
+            }
+            Triviality::Contradiction => filtered = filtered.and(Ternary::False),
+            Triviality::Tautology => filtered = filtered.and(Ternary::True),
+        }
     }
     filtered
 }
