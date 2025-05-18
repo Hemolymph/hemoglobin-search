@@ -1,9 +1,9 @@
 use chumsky::{
+    IterParser, Parser,
     error::Rich,
     extra,
     prelude::{any, choice, end, just, recursive},
     text::ident,
-    IterParser, Parser,
 };
 use hemoglobin::{
     cards::{
@@ -14,31 +14,7 @@ use hemoglobin::{
 };
 use regex::Regex;
 
-use super::{Errors, Ordering, Query, QueryRestriction, Sort, TextComparison};
-
-/// # Errors
-/// When `str` is not a valid property query name
-pub fn get_property_from_name(str: &str) -> Result<Properties, Errors> {
-    match str {
-        "id" => Ok(Properties::StringProperty(Text::Id)),
-        "name" | "n" => Ok(Properties::StringProperty(Text::Name)),
-        "flavortext" | "flavor" | "ft" => Ok(Properties::StringProperty(Text::FlavorText)),
-        "description" | "desc" | "de" => Ok(Properties::StringProperty(Text::Description)),
-        "type" | "t" => Ok(Properties::StringProperty(Text::Type)),
-        "cost" | "c" => Ok(Properties::NumProperty(Number::Cost)),
-        "health" | "h" | "hp" => Ok(Properties::NumProperty(Number::Health)),
-        "power" | "strength" | "damage" | "p" | "dmg" | "str" => {
-            Ok(Properties::NumProperty(Number::Power))
-        }
-        "defense" | "defence" | "def" | "d" => Ok(Properties::NumProperty(Number::Defense)),
-        "kin" | "k" => Ok(Properties::Kin),
-        "function" | "fun" | "fn" | "f" => Ok(Properties::ArrayProperty(Array::Functions)),
-        "keyword" | "kw" => Ok(Properties::Keywords),
-        "sort" | "so" => Ok(Properties::Sort(Ordering::Ascending)),
-        "sortd" | "sod" => Ok(Properties::Sort(Ordering::Descending)),
-        _ => Err(Errors::UnknownStringParam(str.to_owned())),
-    }
-}
+use super::{Ordering, Query, QueryRestriction, Sort, TextComparison};
 
 #[derive(Clone, Copy)]
 pub enum Properties {
