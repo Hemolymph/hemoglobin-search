@@ -532,21 +532,22 @@ where
     I::IntoIter: Clone,
     &'card C: Read,
 {
-    match query.triviality() {
-        Triviality::NonTrivial => (),
+    let mut results: Vec<_> = match query.triviality() {
+        Triviality::NonTrivial => {
+            let iter = cards.into_iter();
+            let iter_clone = iter.clone();
+            let mut cache = Cache {
+                devouredby: HashMap::new(),
+                devourers: HashMap::new(),
+            };
+            iter.filter(|card| {
+                matches_query(*card, query, &iter_clone, &mut cache) == Ternary::True
+            })
+            .collect()
+        }
         Triviality::Contradiction => return vec![],
-        Triviality::Tautology => return cards.into_iter().collect(),
-    }
-
-    let iter = cards.into_iter();
-    let iter_clone = iter.clone();
-    let mut cache = Cache {
-        devouredby: HashMap::new(),
-        devourers: HashMap::new(),
+        Triviality::Tautology => cards.into_iter().collect(),
     };
-    let mut results: Vec<&C> = iter
-        .filter(|card| matches_query(*card, query, &iter_clone, &mut cache) == Ternary::True)
-        .collect();
 
     match &query.sort {
         Sort::None => (),

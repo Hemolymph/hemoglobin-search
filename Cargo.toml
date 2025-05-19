@@ -2,7 +2,7 @@
 name = "hemoglobin-search"
 description = "Hemoglobin search utilities"
 license = "MIT"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 authors = ["Arity <katie-and@ampersandia.net>"]
 readme = "README.md"
