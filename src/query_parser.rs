@@ -43,12 +43,22 @@ pub fn parse_query(string: &str) -> Result<Query, Vec<Rich<'_, char>>> {
 #[allow(clippy::too_many_lines)]
 pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Rich<'a, char>>> + 'a {
     let word = any()
-        .filter(|c: &char| !c.is_whitespace() && *c != ')')
-        .labelled("not whitespace")
+        .filter(|c: &char| {
+            !c.is_whitespace()
+                && *c != '('
+                && *c != ')'
+                && *c != ':'
+                && *c != '='
+                && *c != '<'
+                && *c != '>'
+                && *c != '!'
+                && *c != '-'
+        })
         .repeated()
         .at_least(1)
         .collect::<String>()
-        .labelled("ident");
+        .labelled("ident")
+        .as_context();
 
     let quoted_word = |delim: char| {
         any()
@@ -56,6 +66,7 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
             .repeated()
             .collect::<String>()
             .labelled(format!("string wrapped in {delim}"))
+            .as_context()
     };
 
     let keyword = |mat: &'static str| {
@@ -68,6 +79,7 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
                 }
             })
             .labelled(format!("`{mat}`"))
+            .as_context()
     };
 
     let name_property_name = choice((keyword("name"), keyword("n"))).to(Text::Name);
@@ -112,7 +124,8 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
             x.parse()
                 .map_err(|x| Rich::custom(span, format!("Not a number: {x}")))
         })
-        .labelled("number");
+        .labelled("number")
+        .as_context();
 
     let regex_text = quoted_word('/')
         .try_map(|x, span| {
@@ -120,7 +133,8 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
                 .map_err(|x| Rich::custom(span, format!("Not a valid regex: {x}")))
         })
         .delimited_by(just('/'), just('/'))
-        .labelled("regex expression");
+        .labelled("regex expression")
+        .as_context();
 
     let quoted_text = quoted_word('"')
         .delimited_by(just('"'), just('"'))
@@ -132,7 +146,8 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
             .repeated()
             .collect()
             .delimited_by(just('(').padded(), just(')').padded())
-            .labelled("subquery");
+            .labelled("subquery")
+            .as_context();
 
         let group_restriction = group
             .clone()
@@ -275,7 +290,8 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
         let uniop = choice((
             just('-').to(QueryOp::Not),
             just('!').to(QueryOp::LenientNot),
-        ));
+        ))
+        .labelled("negation operator");
 
         let atom = uniop
             .padded()
@@ -293,21 +309,23 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
             keyword("XOR").to(QueryBinOp::Xor),
         ));
 
-        atom.then(operation.then(expr).or_not()).map(
-            |(first, op): (QueryRestriction, Option<(QueryBinOp, QueryRestriction)>)| match op {
-                None => first,
-                Some((op, right)) => match op {
-                    QueryBinOp::Or => QueryRestriction::Or(
-                        Query::from_restrictions(vec![first]),
-                        Query::from_restrictions(vec![right]),
-                    ),
-                    QueryBinOp::Xor => QueryRestriction::Xor(
-                        Query::from_restrictions(vec![first]),
-                        Query::from_restrictions(vec![right]),
-                    ),
+        atom.then(operation.then(expr).or_not())
+            .map(
+                |(first, op): (QueryRestriction, Option<(QueryBinOp, QueryRestriction)>)| match op {
+                    None => first,
+                    Some((op, right)) => match op {
+                        QueryBinOp::Or => QueryRestriction::Or(
+                            Query::from_restrictions(vec![first]),
+                            Query::from_restrictions(vec![right]),
+                        ),
+                        QueryBinOp::Xor => QueryRestriction::Xor(
+                            Query::from_restrictions(vec![first]),
+                            Query::from_restrictions(vec![right]),
+                        ),
+                    },
                 },
-            },
-        )
+            )
+            .labelled("search expression")
     });
 
     let order = choice((

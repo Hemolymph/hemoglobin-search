@@ -245,7 +245,7 @@ enum Triviality {
 impl QueryRestriction {
     fn triviality(&self) -> Triviality {
         match self {
-            QueryRestriction::NumberComparison(_, Comparison::LowerThan(0)) => {
+            QueryRestriction::NumberComparison(Number::Cost, Comparison::LowerThan(0)) => {
                 Triviality::Contradiction
             }
             QueryRestriction::NumberComparison(Number::Cost, Comparison::GreaterThanOrEqual(0)) => {
@@ -330,9 +330,11 @@ impl QueryRestriction {
                 })
             }
             QueryRestriction::Not(query) => !matches_query(card, query, cards, cache),
-            QueryRestriction::LenientNot(query) => {
-                matches_query(card, query, cards, cache).is_true().into()
-            }
+            QueryRestriction::LenientNot(query) => match matches_query(card, query, cards, cache) {
+                Ternary::Void => Ternary::True,
+                Ternary::False => Ternary::True,
+                Ternary::True => Ternary::False,
+            },
             QueryRestriction::Devours(devours, comparison) => match comparison {
                 ComparisonKind::Contains => devours_match(card, cards, devours, cache),
                 ComparisonKind::Equals => card.get_keywords().map_or(Ternary::Void, |keyword| {
@@ -781,6 +783,21 @@ mod test {
         let query = parse_query("()").expect("Could not parse query");
         let results = search(&query, &cards);
 
-        assert!(cards.len() == results.len())
+        assert_eq!(cards.len(), results.len())
+    }
+
+    #[test]
+    fn no_fuzzy_confusion_avoiding_correct_parse() {
+        let query = parse_query("c=0").expect("Could not parse query");
+        assert!(query.name.is_empty());
+        let query = parse_query("()").expect("Could not parse query");
+        assert!(query.name.is_empty());
+    }
+
+    #[test]
+    fn no_fuzzy_confusion_avoiding_failure() {
+        let _ = parse_query("c=").expect_err("Query should not be parseable");
+        let _ = parse_query("power<").expect("Query should not be parseable");
+        let _ = parse_query(r#"d="awawa"#).expect_err("Query should not be parseable");
     }
 }
