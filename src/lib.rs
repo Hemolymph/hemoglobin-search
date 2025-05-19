@@ -677,6 +677,12 @@ impl QueryFrom for CardId {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ComparisonKind {
+    Contains,
+    Equals,
+}
+
 #[cfg(test)]
 mod test {
     use crate::*;
@@ -745,6 +751,7 @@ mod test {
             &std::fs::read_to_string("tests/search.json").expect("Couldn't load search.json"),
         )
         .expect("Couldn't convert search.json to a vec of cards");
+
         for val in 4..=6 {
             let result = search(
                 &parse_query(&format!("c>={val}")).expect("couldn't parse query"),
@@ -763,10 +770,17 @@ mod test {
             assert!(!fail);
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub enum ComparisonKind {
-    Contains,
-    Equals,
+    #[test]
+    fn search_all() {
+        let cards: Vec<Card> = serde_json::from_str(
+            &std::fs::read_to_string("tests/search.json").expect("Couldn't load search.json"),
+        )
+        .expect("Couldn't convert search.json to a vec of cards");
+
+        let query = parse_query("()").expect("Could not parse query");
+        let results = search(&query, &cards);
+
+        assert!(cards.len() == results.len())
+    }
 }
