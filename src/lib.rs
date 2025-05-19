@@ -46,6 +46,28 @@ pub struct Query {
 }
 
 impl Query {
+    fn from_restrictions(restrictions: Vec<QueryRestriction>) -> Self {
+        let mut name = String::new();
+
+        for restriction in &restrictions {
+            if let QueryRestriction::Fuzzy(a) = restriction {
+                name += a;
+                name += " ";
+            }
+        }
+
+        let sort = if name.is_empty() {
+            Sort::Alphabet(Text::Name, Ordering::Ascending)
+        } else {
+            Sort::Fuzzy
+        };
+
+        Self {
+            name: name.trim().to_string(),
+            restrictions,
+            sort,
+        }
+    }
     fn triviality(&self) -> Triviality {
         if !self.name.is_empty() {
             return Triviality::NonTrivial;
@@ -67,7 +89,7 @@ impl Query {
 
         triviality
     }
-    pub fn keyword_is_match<'card, 'cardvec, 'query, T, I>(
+    fn keyword_is_match<'card, 'cardvec, 'query, T, I>(
         &'query self,
         keyword: &'card Keyword,
         cards: &'cardvec I,
@@ -80,7 +102,7 @@ impl Query {
     {
         if keyword.name == "devours" {
             if let Some(KeywordData::CardId(ref devoured_id)) = keyword.data {
-                return matches_query(devoured_id.as_ref(), self, cards, cache) == Ternary::True;
+                return matches_query(devoured_id.as_ref(), self, cards, cache).is_true();
             }
         }
 
@@ -127,7 +149,7 @@ impl Display for QueryRestriction {
                 write!(f, "which are devoured by [{devourer}]")
             }
             Self::Fuzzy(text) => write!(f, "with \"{text}\" written on them"),
-            Self::Devours(devourees) => write!(f, "that devour [{devourees}]"),
+            Self::Devours(devourees, _) => write!(f, "that devour [{devourees}]"),
             Self::NumberComparison(property, comparison) => {
                 write!(f, "with {property} {comparison}")
             }
@@ -199,7 +221,7 @@ impl TextComparison {
 #[derive(Debug, Clone)]
 pub enum QueryRestriction {
     Fuzzy(String),
-    Devours(Query),
+    Devours(Query, ComparisonKind),
     DevouredBy(Query),
     NumberComparison(Number, Comparison),
     TextComparison(Text, TextComparison),
@@ -262,7 +284,7 @@ impl QueryRestriction {
             _ => Triviality::NonTrivial,
         }
     }
-    pub fn is_match<'card, 'cardvec, 'query, C, T, I>(
+    fn is_match<'card, 'cardvec, 'query, C, T, I>(
         &'query self,
         card: &'card C,
         query: &'query Query,
@@ -311,82 +333,136 @@ impl QueryRestriction {
             QueryRestriction::LenientNot(query) => {
                 matches_query(card, query, cards, cache).is_true().into()
             }
-            QueryRestriction::Devours(query) => {
-                card.get_keywords().map_or(Ternary::Void, |keyword| {
+            QueryRestriction::Devours(devours, comparison) => match comparison {
+                ComparisonKind::Contains => devours_match(card, cards, devours, cache),
+                ComparisonKind::Equals => card.get_keywords().map_or(Ternary::Void, |keyword| {
                     keyword
                         .iter()
-                        .any(|keyword| query.keyword_is_match(keyword, cards, cache))
+                        .any(|keyword| devours.keyword_is_match(keyword, cards, cache))
                         .into()
-                })
-            }
+                }),
+            },
             QueryRestriction::DevouredBy(devoured_by) => {
-                let key = format!("{devoured_by}");
-                let devoured_cards;
-                let maybe_devourees = cache.get(&key).cloned();
-                if let Some(value) = maybe_devourees {
-                    devoured_cards = value;
-                } else {
-                    let devourers = cards
-                        .clone()
-                        .filter(|card| matches_query(*card, devoured_by, cards, cache).is_true());
-
-                    let mut no_devourers = true;
-                    let mut queries: Vec<Query> = vec![];
-
-                    for devourer in devourers {
-                        if let Some(Keyword {
-                            name: _,
-                            data: Some(KeywordData::CardId(card_id)),
-                        }) = devourer
-                            .get_keywords()
-                            .and_then(|x| x.iter().find(|x| x.name == "devours"))
-                        {
-                            no_devourers = false;
-                            queries.push(Query {
-                                name: String::new(),
-                                restrictions: card_id.get_as_query(),
-                                sort: Sort::None,
-                            });
-                        }
-                    }
-
-                    if no_devourers {
-                        devoured_cards = vec![];
-                        cache.insert(key, vec![]);
-                    } else {
-                        let devourees_query = queries
-                            .into_iter()
-                            .reduce(|first, second| Query {
-                                name: String::new(),
-                                restrictions: vec![QueryRestriction::Or(first, second)],
-                                sort: Sort::None,
-                            })
-                            .unwrap_or(Query {
-                                name: String::new(),
-                                restrictions: vec![],
-                                sort: Sort::None,
-                            });
-
-                        let devourees_query = Query {
-                            name: query.name.clone(),
-                            restrictions: devourees_query.restrictions,
-                            sort: query.sort,
-                        };
-
-                        devoured_cards = search(&devourees_query, cards.clone());
-                        cache.insert(key, devoured_cards.clone());
-                    }
-                }
-                devoured_cards
-                    .iter()
-                    .any(|x| x.get_name() == card.get_name())
-                    .into()
+                devouredby_match(card, cards, query, devoured_by, cache)
             }
             QueryRestriction::KinComparison(comparison) => card
                 .get_kin()
                 .map_or(Ternary::Void, |kin| comparison.is_match(*kin).into()),
         }
     }
+}
+
+fn devouredby_match<'card, 'cardvec, 'query, T, I, C>(
+    card: &'card C,
+    cards: &'cardvec I,
+    query: &'query Query,
+    devoured_by: &'query Query,
+    cache: &'query mut Cache<&'card T>,
+) -> Ternary
+where
+    C: Read,
+    T: Read + 'card + Clone,
+    &'card T: Read,
+    I: Iterator<Item = &'card T> + Clone,
+{
+    let key = format!("{devoured_by}");
+    let devoured_cards;
+    let maybe_devourees = cache.devouredby.get(&key).cloned();
+    if let Some(value) = maybe_devourees {
+        devoured_cards = value;
+    } else {
+        let devourers = cards
+            .clone()
+            .filter(|card| matches_query(*card, devoured_by, cards, cache).is_true());
+
+        let mut no_devourers = true;
+        let mut queries: Vec<Query> = vec![];
+
+        for devourer in devourers {
+            if let Some(Keyword {
+                name: _,
+                data: Some(KeywordData::CardId(card_id)),
+            }) = devourer
+                .get_keywords()
+                .and_then(|x| x.iter().find(|x| x.name == "devours"))
+            {
+                no_devourers = false;
+                queries.push(Query {
+                    name: String::new(),
+                    restrictions: card_id.get_as_query(),
+                    sort: Sort::None,
+                });
+            }
+        }
+
+        if no_devourers {
+            devoured_cards = vec![];
+            cache.devouredby.insert(key, vec![]);
+        } else {
+            let devourees_query = queries
+                .into_iter()
+                .reduce(|first, second| Query {
+                    name: String::new(),
+                    restrictions: vec![QueryRestriction::Or(first, second)],
+                    sort: Sort::None,
+                })
+                .unwrap_or(Query {
+                    name: String::new(),
+                    restrictions: vec![],
+                    sort: Sort::None,
+                });
+
+            let devourees_query = Query {
+                name: query.name.clone(),
+                restrictions: devourees_query.restrictions,
+                sort: query.sort,
+            };
+
+            devoured_cards = search(&devourees_query, cards.clone());
+            cache.devouredby.insert(key, devoured_cards.clone());
+        }
+    }
+    devoured_cards
+        .iter()
+        .any(|x| x.get_name() == card.get_name())
+        .into()
+}
+
+fn devours_match<'card, 'cardvec, 'query, T, I, C>(
+    card: &'card C,
+    cards: &'cardvec I,
+    devourees: &'query Query,
+    cache: &'query mut Cache<&'card T>,
+) -> Ternary
+where
+    C: Read,
+    T: Read + 'card + Clone,
+    &'card T: Read,
+    I: Iterator<Item = &'card T> + Clone,
+{
+    let devourees = cache
+        .devourers
+        .entry(devourees.to_string())
+        .or_insert(search(devourees, cards.clone()));
+
+    if let Some(Keyword {
+        name: _,
+        data: Some(KeywordData::CardId(card_id)),
+    }) = card
+        .get_keywords()
+        .and_then(|x| x.iter().find(|x| x.name == "devours"))
+    {
+        let query = Query::from_restrictions(card_id.get_as_query());
+        let specific_devourees = search(&query, cards.clone());
+        if specific_devourees
+            .into_iter()
+            .any(|x| devourees.iter().any(|y| x.get_name() == y.get_name()))
+        {
+            return Ternary::True;
+        }
+    }
+
+    Ternary::False
 }
 
 /// Represents a specific ordering for sorting.
@@ -437,7 +513,13 @@ pub fn fuzzy(card: &impl Read, query: &str) -> bool {
 }
 
 /// The Cache for `devouredby` queries.
-pub type Cache<T> = HashMap<String, Vec<T>>;
+pub type CachePart<T> = HashMap<String, Vec<T>>;
+
+#[derive(Default)]
+struct Cache<T> {
+    devouredby: CachePart<T>,
+    devourers: CachePart<T>,
+}
 
 /// Function that takes `cards` and outputs a vector pointing to all the cards that matched the `query`.
 #[must_use]
@@ -456,7 +538,10 @@ where
 
     let iter = cards.into_iter();
     let iter_clone = iter.clone();
-    let mut cache = Cache::new();
+    let mut cache = Cache {
+        devouredby: HashMap::new(),
+        devourers: HashMap::new(),
+    };
     let mut results: Vec<&C> = iter
         .filter(|card| matches_query(*card, query, &iter_clone, &mut cache) == Ternary::True)
         .collect();
@@ -507,7 +592,7 @@ where
 /// Since `devouredby` queries always require two searches, the results of the first search are stored in a `cache` that is internally mutable. This cache is only ever mutated the first time each devouredby query is executed.
 /// The sum total of available `cards` is passed in order to perform searches. This function clones these cards, so this value should be an Iterator.
 #[allow(clippy::too_many_lines)]
-pub fn matches_query<'card, 'cardvec, 'query, C, T, I>(
+fn matches_query<'card, 'cardvec, 'query, C, T, I>(
     card: &'card C,
     query: &'query Query,
     cards: &'cardvec I,
@@ -678,4 +763,10 @@ mod test {
             assert!(!fail);
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum ComparisonKind {
+    Contains,
+    Equals,
 }

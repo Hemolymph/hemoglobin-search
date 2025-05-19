@@ -1,3 +1,4 @@
+use crate::ComparisonKind;
 use chumsky::{
     IterParser, Parser,
     error::Rich,
@@ -135,9 +136,9 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
 
         let group_restriction = group
             .clone()
-            .map(|x| QueryRestriction::Group(query_from_restrictions(x)));
+            .map(|x| QueryRestriction::Group(Query::from_restrictions(x)));
 
-        let group_query = group.clone().map(query_from_restrictions);
+        let group_query = group.clone().map(Query::from_restrictions);
 
         // Num Properties
         let num_comparison_symbol = choice((
@@ -173,8 +174,8 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
 
         // Text Properties
         let text_comparison_symbol = choice((
-            just('=').to(TextComparisonSymbol::Equals),
-            just(':').to(TextComparisonSymbol::Contains),
+            just('=').to(ComparisonKind::Equals),
+            just(':').to(ComparisonKind::Contains),
         ))
         .padded();
 
@@ -186,11 +187,12 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
         .padded();
 
         let text_comparison = text_comparison_symbol
+            .clone()
             .then(text_comparable)
             .map(|(symbol, text)| match text {
                 TextComparable::String(string) => match symbol {
-                    TextComparisonSymbol::Contains => TextComparison::Contains(string),
-                    TextComparisonSymbol::Equals => TextComparison::EqualTo(string),
+                    ComparisonKind::Contains => TextComparison::Contains(string),
+                    ComparisonKind::Equals => TextComparison::EqualTo(string),
                 },
                 TextComparable::Regex(regex) => TextComparison::HasMatch(regex),
             })
@@ -235,9 +237,9 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
         let null_comparison_symbol = choice((just('=').to(()), just(':').to(()))).padded();
 
         let devours_property = devours_property_name
-            .ignore_then(null_comparison_symbol)
-            .ignore_then(group_query.clone())
-            .map(QueryRestriction::Devours)
+            .ignore_then(text_comparison_symbol)
+            .then(group_query.clone())
+            .map(|(comparison, query)| QueryRestriction::Devours(query, comparison))
             .padded();
 
         // Devoured by
@@ -279,9 +281,9 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
             .padded()
             .repeated()
             .foldr(atom, |op, atom| match op {
-                QueryOp::Not => QueryRestriction::Not(query_from_restrictions(vec![atom])),
+                QueryOp::Not => QueryRestriction::Not(Query::from_restrictions(vec![atom])),
                 QueryOp::LenientNot => {
-                    QueryRestriction::LenientNot(query_from_restrictions(vec![atom]))
+                    QueryRestriction::LenientNot(Query::from_restrictions(vec![atom]))
                 }
             })
             .labelled("search atom");
@@ -296,12 +298,12 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
                 None => first,
                 Some((op, right)) => match op {
                     QueryBinOp::Or => QueryRestriction::Or(
-                        query_from_restrictions(vec![first]),
-                        query_from_restrictions(vec![right]),
+                        Query::from_restrictions(vec![first]),
+                        Query::from_restrictions(vec![right]),
                     ),
                     QueryBinOp::Xor => QueryRestriction::Xor(
-                        query_from_restrictions(vec![first]),
-                        query_from_restrictions(vec![right]),
+                        Query::from_restrictions(vec![first]),
+                        Query::from_restrictions(vec![right]),
                     ),
                 },
             },
@@ -339,42 +341,13 @@ pub fn make_query_parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Ric
     expr.padded()
         .repeated()
         .collect()
-        .map(query_from_restrictions)
+        .map(Query::from_restrictions)
         .then(sort.padded())
         .map(|(mut query, sort)| {
             query.sort = sort;
             query
         })
         .then_ignore(end())
-}
-
-fn query_from_restrictions(restrictions: Vec<QueryRestriction>) -> Query {
-    let mut name = String::new();
-
-    for restriction in &restrictions {
-        if let QueryRestriction::Fuzzy(a) = restriction {
-            name += a;
-            name += " ";
-        }
-    }
-
-    let sort = if name.is_empty() {
-        Sort::Alphabet(Text::Name, Ordering::Ascending)
-    } else {
-        Sort::Fuzzy
-    };
-
-    Query {
-        name: name.trim().to_string(),
-        restrictions,
-        sort,
-    }
-}
-
-#[derive(Clone)]
-enum TextComparisonSymbol {
-    Contains,
-    Equals,
 }
 
 #[derive(Clone)]
