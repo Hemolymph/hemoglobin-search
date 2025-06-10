@@ -2,7 +2,7 @@ use std::cmp::{Ordering, max_by};
 
 use rust_fuzzy_search::fuzzy_compare;
 
-use hemoglobin::cards::properties::Read;
+use hemoglobin::{cards::properties::Read, clean_ascii};
 
 /// Compares a card's text with a given string and outputs a value for how much it matched the text.
 ///
@@ -14,6 +14,9 @@ pub fn weighted_compare(a: &impl Read, b: &str) -> f32 {
     let mut result = 0.0;
 
     if let Some(name) = a.get_name() {
+        if clean_ascii(name) == clean_ascii(b) {
+            return f32::MAX;
+        }
         result += max_by(
             fuzzy_compare(name, b),
             fuzzy_compare(&name.to_lowercase(), &b.to_lowercase()),
