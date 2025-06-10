@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "hemoglobin"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "getrandom",
  "regex",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "hemoglobin-search"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "chumsky",
  "hemoglobin",
